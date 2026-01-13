@@ -46,40 +46,30 @@ with st.sidebar.expander("Nowy produkt"):
                 st.rerun()
 
 # --- GŁÓWNY PANEL ---
-tab_magazyn, tab_dostawa, tab_produkty = st.tabs(["📊 Stan Magazynowy", "🚚 Dostawa/Aktualizacja", "⚙️ Zarządzanie"])
+tab_magazyn, tab_operacje, tab_admin = st.tabs(["📊 Stan Magazynowy", "🔄 Ruch Towaru", "⚙️ Administracja"])
 
 with tab_magazyn:
     if produkty_data:
         df = pd.DataFrame(produkty_data)
-        
-        # Metryki na górze
         col1, col2, col3 = st.columns(3)
         total_val = (df['cena'] * df['liczba']).sum()
         col1.metric("Wartość magazynu", f"{total_val:,.2f} zł")
         col2.metric("Asortyment", len(df))
         col3.metric("Suma sztuk", int(df['liczba'].sum()))
 
-        # --- LOGIKA KOLORÓW I ALERTÓW ---
-        PROG_NISKI = 5
-        PROG_SREDNI = 20
-
+        PROG_NISKI, PROG_SREDNI = 5, 20
         niskie_count = len(df[df['liczba'] <= PROG_NISKI])
-        srednie_count = len(df[(df['liczba'] > PROG_NISKI) & (df['liczba'] <= PROG_SREDNI)])
         
         if niskie_count > 0:
-            st.error(f"🚨 ALERT: {niskie_count} produktów ma krytycznie niski stan (poniżej {PROG_NISKI} szt.)!")
-        elif srednie_count > 0:
-            st.warning(f"⚠️ UWAGA: {srednie_count} produktów ma średni stan zapasów.")
+            st.error(f"🚨 ALERT: {niskie_count} produktów wymaga uzupełnienia!")
         else:
-            st.success("✅ Stany magazynowe są optymalne.")
+            st.success("✅ Stany magazynowe są bezpieczne.")
 
-        # Przygotowanie tabeli
         df['Kategoria'] = df['kategorie'].apply(lambda x: x['nazwa'] if x else "Brak")
         display_df = df[['nazwa', 'Kategoria', 'cena', 'liczba']].rename(
             columns={'nazwa': 'Produkt', 'cena': 'Cena (zł)', 'liczba': 'Ilość'}
         )
 
-        # Funkcja stylowania wierszy
         def style_rows(row):
             if row['Ilość'] <= PROG_NISKI:
                 return ['background-color: #ff4b4b22; color: #ff4b4b; font-weight: bold'] * len(row)
@@ -88,47 +78,53 @@ with tab_magazyn:
             else:
                 return ['background-color: #28a74511; color: #1e7e34'] * len(row)
 
-        st.subheader("Szczegółowa lista towarów")
         st.dataframe(display_df.style.apply(style_rows, axis=1), use_container_width=True)
     else:
-        st.info("Baza danych jest pusta. Dodaj pierwszy produkt w panelu bocznym.")
+        st.info("Baza danych jest pusta.")
 
-with tab_dostawa:
-    st.header("Aktualizacja stanów (Dostawa)")
-    if not produkty_data:
-        st.warning("Brak produktów w bazie.")
-    else:
+with tab_operacje:
+    col_in, col_out = st.columns(2)
+    
+    with col_in:
+        st.header("🚚 Dostawa (Przyjęcie)")
         with st.form("dostawa_form"):
-            wybrany_p_nazwa = st.selectbox("Wybierz produkt", options=list(lista_produktow.keys()))
-            ilosc_dodana = st.number_input("Ilość z dostawy", min_value=1, step=1)
-            
-            if st.form_submit_button("Dodaj do stanu"):
-                aktualny_produkt = next(item for item in produkty_data if item["nazwa"] == wybrany_p_nazwa)
-                nowa_suma = aktualny_produkt["liczba"] + ilosc_dodana
-                
-                supabase.table("produkty").update({"liczba": nowa_suma}).eq("id", aktualny_produkt["id"]).execute()
-                st.success(f"Zaktualizowano {wybrany_p_nazwa}. Nowy stan: {nowa_suma} szt.")
+            wybrany_p = st.selectbox("Produkt", options=list(lista_produktow.keys()), key="in_p")
+            ilosc_in = st.number_input("Ile sztuk dodać?", min_value=1, step=1)
+            if st.form_submit_button("Zatwierdź przyjęcie"):
+                akt = next(item for item in produkty_data if item["nazwa"] == wybrany_p)
+                supabase.table("produkty").update({"liczba": akt["liczba"] + ilosc_in}).eq("id", akt["id"]).execute()
+                st.success(f"Dodano {ilosc_in} szt. {wybrany_p}")
                 st.rerun()
 
-with tab_produkty:
-    st.header("Usuwanie i Administracja")
+    with col_out:
+        st.header("🛒 Wydanie (Sprzedaż)")
+        with st.form("wydanie_form"):
+            wybrany_p_out = st.selectbox("Produkt", options=list(lista_produktow.keys()), key="out_p")
+            ilosc_out = st.number_input("Ile sztuk usunąć?", min_value=1, step=1)
+            if st.form_submit_button("Zatwierdź wydanie"):
+                akt = next(item for item in produkty_data if item["nazwa"] == wybrany_p_out)
+                if akt["liczba"] >= ilosc_out:
+                    supabase.table("produkty").update({"liczba": akt["liczba"] - ilosc_out}).eq("id", akt["id"]).execute()
+                    st.success(f"Wydano {ilosc_out} szt. {wybrany_p_out}")
+                    st.rerun()
+                else:
+                    st.error(f"Błąd: Brak wystarczającej ilości! (Dostępne: {akt['liczba']})")
+
+with tab_admin:
+    st.header("Usuwanie całkowite z bazy")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("🗑️ Usuń Produkty")
+        st.subheader("🗑️ Produkty")
         for p in produkty_data:
-            col_txt, col_btn = st.columns([3, 1])
-            col_txt.write(p['nazwa'])
-            if col_btn.button("Usuń", key=f"delp_{p['id']}", help="Usuń trwale produkt"):
+            if st.button(f"Usuń {p['nazwa']} z bazy", key=f"delp_{p['id']}"):
                 supabase.table("produkty").delete().eq("id", p['id']).execute()
                 st.rerun()
     with c2:
-        st.subheader("📂 Usuń Kategorie")
+        st.subheader("📂 Kategorie")
         for k in kategorie_data:
-            col_txt, col_btn = st.columns([3, 1])
-            col_txt.write(k['nazwa'])
-            if col_btn.button("Usuń", key=f"delk_{k['id']}", help="Usuń kategorię"):
+            if st.button(f"Usuń kategorię {k['nazwa']}", key=f"delk_{k['id']}"):
                 try:
                     supabase.table("kategorie").delete().eq("id", k['id']).execute()
                     st.rerun()
                 except:
-                    st.error(f"Nie można usunąć '{k['nazwa']}' - zawiera produkty.")
+                    st.error(f"Kategoria '{k['nazwa']}' nie jest pusta!")
